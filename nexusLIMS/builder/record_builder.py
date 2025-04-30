@@ -74,6 +74,7 @@ def build_record(
     sample_id: Optional[str] = None,
     *,
     generate_previews: bool = True,
+    ignore_reservations: bool = False
 ) -> str:
     """
     Build a NexusLIMS XML record of an Experiment.
@@ -96,6 +97,9 @@ def build_record(
         collected in this record. If None, a UUIDv4 will be generated
     generate_previews
         Whether to create the preview thumbnail images
+    ignore_reservations
+        Tells the system to not take reservations into account when checking sessions.
+        This means that the consent should be part of the pre-run data from the tool.
 
     Returns
     -------
@@ -121,13 +125,16 @@ def build_record(
         session.user,
         session.instrument.harvester,
     )
-    # this returns a nexusLIMS.harvesters.reservation_event.ReservationEvent
-    res_event = get_reservation_event(session)
 
-    output = res_event.as_xml()
+    if ignore_reservations:
+        pass
+    else:
+        # this returns a nexusLIMS.harvesters.reservation_event.ReservationEvent
+        res_event = get_reservation_event(session)
+        output = res_event.as_xml()
 
-    for child in output:
-        xml.append(child)
+        for child in output:
+            xml.append(child)
 
     logger.info(
         "Building acquisition activities for timespan from %s to %s",
@@ -415,13 +422,19 @@ def dump_record(
     return filename
 
 
-def build_new_session_records() -> List[Path]:
+def build_new_session_records(ignore_reservations: bool = False) -> List[Path]:
     """
     Build records for new sessions from the database.
 
     Uses :py:func:`~nexusLIMS.db.session_handler.get_sessions_to_build`) and builds
     those records using :py:func:`build_record` (saving to the NexusLIMS folder), and
     returns a list of resulting .xml files to be uploaded to CDCS.
+
+    Parameters
+    ----------
+    ignore_reservations
+        Tells the system to not take reservations into account when checking sessions.
+        This means that the consent should be part of the pre-run data from the tool.
 
     Returns
     -------
@@ -441,7 +454,7 @@ def build_new_session_records() -> List[Path]:
     for s in sessions:
         try:
             db_row = s.insert_record_generation_event()
-            record_text = build_record(session=s)
+            record_text = build_record(session=s, ignore_reservations=ignore_reservations)
         except (  # pylint: disable=broad-exception-caught
             FileNotFoundError,
             Exception,
@@ -537,6 +550,7 @@ def process_new_records(
     dry_run: bool = False,
     dt_from: Optional[dt] = None,
     dt_to: Optional[dt] = None,
+    ignore_reservations: bool = False
 ):
     """
     Process new records (this is the main entrypoint to the record builder).
@@ -561,6 +575,9 @@ def process_new_records(
         no date filtering will be performed. This parameter currently only
         has an effect for the NEMO harvester. All SharePoint events will always
         be fetched.
+    ignore_reservations
+        Tells the system to not take reservations into account when checking sessions.
+        This means that the consent should be part of the pre-run data from the tool.
     """
     if dry_run:
         logger.info("!!DRY RUN!! Only finding files, not building records")
@@ -583,13 +600,15 @@ def process_new_records(
             #       (prob. new function that takes session and determines
             #       where it came from and then gets the matching reservation
             #       event)
-            get_reservation_event(s)
+            if not ignore_reservations:
+                get_reservation_event(s)
+
             dry_run_file_find(s)
     else:
         # DONE: NEMO usage events fetcher should take a time range; we also
         #  need a consistent response for testing
         nemo_utils.add_all_usage_events_to_db(dt_from=dt_from, dt_to=dt_to)
-        xml_files = build_new_session_records()
+        xml_files = build_new_session_records(ignore_reservations=ignore_reservations)
         if len(xml_files) == 0:
             logger.warning("No XML files built, so no files uploaded")
         else:
@@ -677,6 +696,9 @@ if __name__ == "__main__":  # pragma: no cover
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('--ignore-reservations', '-ir', action='store_true',
+                        help='Browse usage events and not reservations')
+
     # Optional argument flag which defaults to False
     parser.add_argument(
         "-n",
@@ -718,9 +740,12 @@ if __name__ == "__main__":  # pragma: no cover
     # explicitly since the setup_loggers function won't find it
     logger.setLevel(logging_levels[args.verbose])
 
+    logger.info("Launching process records with the following arguments: %s", str(args))
+
     # by default only fetch the last week's worth of data from the NEMO
     # harvesters to speed things up
     process_new_records(
         dry_run=args.dry_run,
         dt_from=dt.now(tz=current_system_tz()) - td(weeks=2),
+        ignore_reservations=args.ignore_reservations
     )
