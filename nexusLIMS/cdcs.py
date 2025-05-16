@@ -155,7 +155,7 @@ def upload_record_content(xml_content, title):
     if post_r.status_code != HTTPStatus.CREATED:
         # anything other than 201 status means something went wrong
         logger.error("Got error while uploading %s:\n%s", title, post_r.text)
-        return post_r
+        return post_r, None
 
     # assign this record to the public workspace
     record_id = post_r.json()["id"]
@@ -198,7 +198,7 @@ def upload_record_files(
     files_to_upload: Optional[List[Path]],
     *,
     progress: bool = False,
-) -> List[Path]:
+) -> (List[Path], List[str | None]):
     """
     Upload record files to CDCS.
 
@@ -245,6 +245,7 @@ def upload_record_files(
             xml_content = xml_file.read()
 
         title = f_path.stem
+
         response, record_id = upload_record_content(xml_content, title)
 
         if response.status_code != HTTPStatus.CREATED:

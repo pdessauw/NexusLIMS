@@ -42,7 +42,6 @@ import sys
 from datetime import datetime as dt
 from datetime import timedelta as td
 from importlib import import_module, util
-from io import BytesIO
 from pathlib import Path
 from timeit import default_timer
 from typing import List, Optional
@@ -67,7 +66,7 @@ from nexusLIMS.utils import (
 )
 
 logger = logging.getLogger(__name__)
-XSD_PATH: str = Path(activity.__file__).parent / "nexus-experiment.xsd"
+XSD_PATH: str = str(Path(activity.__file__).parent / "nexus-experiment.xsd")
 
 
 def build_record(
@@ -416,28 +415,6 @@ def dump_record(
     return filename
 
 
-def validate_record(xml_filename):
-    """
-    Validate an .xml record against the Nexus schema.
-
-    Parameters
-    ----------
-    xml_filename : str or io.StringIO or io.BytesIO
-        The path to the xml file to be validated (can also be a file-like
-        object like StringIO or BytesIO)
-
-    Returns
-    -------
-    validates : bool
-        Whether the record validates against the Nexus schema
-    """
-    xsd_doc = etree.parse(XSD_PATH)  # noqa: S320
-    xml_schema = etree.XMLSchema(xsd_doc)
-    xml_doc = etree.parse(xml_filename)  # noqa: S320
-
-    return xml_schema.validate(xml_doc)
-
-
 def build_new_session_records() -> List[Path]:
     """
     Build records for new sessions from the database.
@@ -527,36 +504,31 @@ def build_new_session_records() -> List[Path]:
 
 
 def _record_validation_flow(record_text, s, xml_files) -> List[Path]:
-    if validate_record(BytesIO(bytes(record_text, "UTF-8"))):
-        logger.info("Validated newly generated record")
-        # generate filename for saved record and make sure path exists
-        # DONE: fix this for NEMO records since session_identifier is
-        #  a URL and it doesn't work right
-        if s.instrument.harvester == "nemo":
-            # for NEMO session_identifier is a URL of usage_event
-            unique_suffix = f"{nemo_utils.id_from_url(s.session_identifier)}"
-        else:  # pragma: no cover
-            # assume session_identifier is a UUID
-            unique_suffix = f'{s.session_identifier.split("-")[0]}'
-        basename = (
-            f'{s.dt_from.strftime("%Y-%m-%d")}_'
-            f"{s.instrument.name}_"
-            f"{unique_suffix}.xml"
-        )
-        filename = Path(os.environ["nexusLIMS_path"]).parent / "records" / basename
-        filename.parent.mkdir(parents=True, exist_ok=True)
-        # write the record to disk and append to list of files generated
-        with filename.open(mode="w", encoding="utf-8") as f:
-            f.write(record_text)
-        logger.info("Wrote record to %s", filename)
-        xml_files.append(Path(filename))
-        # Mark this session as completed in the database
-        logger.info('Marking %s as "COMPLETED"', s.session_identifier)
-        s.update_session_status("COMPLETED")
-    else:
-        logger.error('Marking %s as "ERROR"', s.session_identifier)
-        logger.error("Could not validate record, did not write to disk")
-        s.update_session_status("ERROR")
+    # generate filename for saved record and make sure path exists
+    # DONE: fix this for NEMO records since session_identifier is
+    #  a URL and it doesn't work right
+    if s.instrument.harvester == "nemo":
+        # for NEMO session_identifier is a URL of usage_event
+        unique_suffix = f"{nemo_utils.id_from_url(s.session_identifier)}"
+    else:  # pragma: no cover
+        # assume session_identifier is a UUID
+        unique_suffix = f'{s.session_identifier.split("-")[0]}'
+    basename = (
+        f'{s.dt_from.strftime("%Y-%m-%d")}_'
+        f"{s.instrument.name}_"
+        f"{unique_suffix}.xml"
+    )
+    filename = Path(os.environ["nexusLIMS_path"]).parent / "records" / basename
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    # write the record to disk and append to list of files generated
+    with filename.open(mode="w", encoding="utf-8") as f:
+        f.write(record_text)
+    logger.info("Wrote record to %s", filename)
+    xml_files.append(Path(filename))
+    # Mark this session as completed in the database
+    logger.info('Marking %s as "COMPLETED"', s.session_identifier)
+    s.update_session_status("COMPLETED")
+
     return xml_files
 
 
@@ -622,19 +594,16 @@ def process_new_records(
             logger.warning("No XML files built, so no files uploaded")
         else:
             files_uploaded, _ = upload_record_files(xml_files)
-            for f in files_uploaded:
-                uploaded_dir = Path(f).parent / "uploaded"
-                Path(uploaded_dir).mkdir(parents=True, exist_ok=True)
 
-                shutil.copy2(f, uploaded_dir)
+            for f in xml_files:  # Move the XML files to their resting location
+                target_subdir = "uploaded" if f in files_uploaded else "error"
+                target_dir = Path(f).parent / target_subdir
+                Path(target_dir).mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, target_dir)
                 Path(f).unlink()
-            files_not_uploaded = [f for f in xml_files if f not in files_uploaded]
 
-            if len(files_not_uploaded) > 0:
-                logger.error(
-                    "Some record files were not uploaded: %s",
-                    files_not_uploaded,
-                )
+            if len(xml_files) != len(files_uploaded):
+                logger.error("Some record files were not uploaded")
     return
 
 
@@ -753,5 +722,5 @@ if __name__ == "__main__":  # pragma: no cover
     # harvesters to speed things up
     process_new_records(
         dry_run=args.dry_run,
-        dt_from=dt.now(tz=current_system_tz()) - td(weeks=1),
+        dt_from=dt.now(tz=current_system_tz()) - td(weeks=2),
     )
